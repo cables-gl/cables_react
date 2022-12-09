@@ -38,7 +38,6 @@ export default class CablesPatch extends Component {
     if (!patchOptions.patch) patchOptions.patch = CABLES.exportedPatch;
     if (!patchOptions.onPatchLoaded) patchOptions.onPatchLoaded = this._patchInitialized.bind(this);
     if (!patchOptions.onFinishedLoading) patchOptions.onFinishedLoading = this._patchFinishedLoading.bind(this);
-    console.log("OPTIONS ARE", patchOptions);
     CABLES.patch = new CABLES.Patch(patchOptions);
   }
 
