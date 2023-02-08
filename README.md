@@ -8,6 +8,8 @@ how to load two patches, with default values and custom ones. `src/CablesPatch.j
 to update your patches, put your exported files into `public/patch` or configure a different path when using the
 component.
 
+**make sure to export as "single javascript file"**
+
 ## requirements
 
 * nodejs and npm in a current version
