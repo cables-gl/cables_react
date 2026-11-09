@@ -1,54 +1,110 @@
-import React, {Component} from 'react';
-
 /* global CABLES */
 
-export default class CablesPatch extends Component {
+const scripts = {};
+const exports = {};
+let queue = Promise.resolve();
 
-  constructor(props) {
-    super(props);
-    this.canvasId = props.canvasId || "glcanvas";
-    this.patchDir = props.patchDir || process.env.PUBLIC_URL + '/patch/';
-    this.patchOptions = {
-      'prefixAssetPath': this.patchDir,
-      'jsPath': this.patchDir + '/js/',
-      'glCanvasId': this.canvasId,
-      'glCanvasResizeToWindow': true,
-      'canvas': {'alpha': true, 'premultipliedAlpha': true},
-      ...props.patchOptions
+function addScript(key, src)
+{
+    if (!scripts[key])
+    {
+        scripts[key] = new Promise((resolve, reject) =>
+        {
+            const script = document.createElement("script");
+            script.src = src;
+            script.onload = resolve;
+            script.onerror = () => { reject(new Error("cables: could not load " + src)); };
+            document.head.appendChild(script);
+        });
     }
-  }
+    return scripts[key];
+}
 
-  componentDidMount() {
-    const script = document.createElement('script');
-    script.src = this.patchDir + '/js/patch.js';
-    script.async = true;
-    script.onload = this._initPatch.bind(this);
-    document.body.appendChild(script);
-  }
+function addModule(name, src)
+{
+    if (!scripts[name])
+    {
+        scripts[name] = import(/* @vite-ignore */ src).then((module) => { window[name] = module; });
+    }
+    return scripts[name];
+}
 
-  render() {
-    const canvasId = this.patchOptions.glCanvasId;
-    return (
-        <canvas id={canvasId} tabIndex="1"></canvas>
-    );
-  }
+async function loadExport(patchDir, libs, assetPath, jsPath)
+{
+    const base = new URL(patchDir.endsWith("/") ? patchDir : patchDir + "/", document.baseURI);
+    const jsBase = new URL(jsPath && !jsPath.endsWith("/") ? jsPath + "/" : jsPath, base);
+    const assetBase = new URL(assetPath && !assetPath.endsWith("/") ? assetPath + "/" : assetPath, base);
 
-  _initPatch() {
-    const patchOptions = this.patchOptions;
-    if (!patchOptions.patch) patchOptions.patch = CABLES.exportedPatch;
-    if (!patchOptions.onPatchLoaded) patchOptions.onPatchLoaded = this._patchInitialized.bind(this);
-    if (!patchOptions.onFinishedLoading) patchOptions.onFinishedLoading = this._patchFinishedLoading.bind(this);
-    CABLES.patch = new CABLES.Patch(patchOptions);
-  }
+    for (const lib of libs)
+    {
+        if (typeof lib === "string") await addScript(lib, new URL(lib, base).href);
+        else await addModule(lib.export, new URL(lib.src, base).href);
+    }
 
-  _patchInitialized(patch) {
-    // You can now access the patch object (patch), register variable watchers and so on
-    console.log(this.patchDir + ' initialized');
-  }
+    const exportedBefore = Object.keys((window.CABLES && CABLES.exportedPatches) || {});
+    const patchJs = new URL("patch.js", jsBase).href;
+    const notCombined = "cables: could not load " + patchJs + ", make sure to export the patch with \"single javascript file\"";
+    await addScript(patchJs, patchJs).catch(() => { throw new Error(notCombined); });
+    if (!window.CABLES || !CABLES.Patch) throw new Error(notCombined);
+    const added = Object.keys(CABLES.exportedPatches || {}).filter((id) => { return !exportedBefore.includes(id); });
+    if (!added.length && !CABLES.exportedPatch) throw new Error(notCombined);
 
-  _patchFinishedLoading(patch) {
-    // The patch is ready now, all assets have been loaded
-    console.log(this.patchDir + ' finished loading');
-  }
+    return {
+        "patch": added.length ? CABLES.exportedPatches[added[0]] : CABLES.exportedPatch,
+        "prefixAssetPath": base.href,
+        "assetPath": assetBase.href,
+        "jsPath": jsBase.href
+    };
+}
 
+export function loadCablesExport(patchDir, libs = [], assetPath = "assets/", jsPath = "js/")
+{
+    const key = patchDir + "|" + assetPath + "|" + jsPath;
+    if (!exports[key])
+    {
+        exports[key] = queue.then(() => { return loadExport(patchDir, libs, assetPath, jsPath); });
+        queue = exports[key].catch(() => {});
+    }
+    return exports[key];
+}
+
+export function startCablesPatch(container, { patchDir, libs, assetPath, jsPath, patchOptions = {} })
+{
+    const canvas = document.createElement("canvas");
+    canvas.tabIndex = 1;
+    canvas.style.cssText = "display:block;width:100%;height:100%;outline:0;";
+    container.appendChild(canvas);
+
+    let patch = null;
+    let stopped = false;
+    const resizeObserver = new ResizeObserver(() =>
+    {
+        const cg = patch && (patch.cgl || patch.cgp);
+        if (cg) cg.setSize(container.clientWidth, container.clientHeight);
+    });
+    resizeObserver.observe(container);
+
+    loadCablesExport(patchDir, libs, assetPath, jsPath).then((config) =>
+    {
+        if (stopped) return;
+        patch = new CABLES.Patch({
+            ...config,
+            "glCanvas": canvas,
+            "canvas": { "alpha": true, "premultipliedAlpha": true },
+            ...patchOptions
+        });
+    }).catch((e) =>
+    {
+        if (stopped) return;
+        if (patchOptions.onError) patchOptions.onError("cables", e);
+        else console.error(e);
+    });
+
+    return () =>
+    {
+        stopped = true;
+        resizeObserver.disconnect();
+        if (patch) patch.dispose();
+        canvas.remove();
+    };
 }
